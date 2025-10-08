@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Download, Calendar, MapPin, Gavel, FileSpreadsheet, Loader2, ExternalLink, Image, FileText, Map } from 'lucide-react';
+import { Search, Download, Calendar, MapPin, Gavel, FileSpreadsheet, Loader2, ExternalLink, Image, FileText, Map, Database, Settings } from 'lucide-react';
 
 // ⚠️ CAMBIA ESTA URL POR LA DE TU BACKEND DE RENDER
-const API_URL = 'https://auctionbrokers-proyecto.onrender.com';
+const API_URL = 'https://auctionbrokers-backend.onrender.com';
 
 export default function App() {
   const [searchTerm, setSearchTerm] = useState('');
@@ -11,6 +11,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [selectedSubastas, setSelectedSubastas] = useState(new Set());
   const [downloadingExcel, setDownloadingExcel] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
+  const [scrapingStatus, setScrapingStatus] = useState('');
 
   const handleSearch = async () => {
     setLoading(true);
@@ -33,6 +35,35 @@ export default function App() {
       alert('Error conectando con el servidor');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const iniciarScraping = async () => {
+    if (!confirm('⚠️ ADVERTENCIA:\n\nEl scraping completo puede tardar VARIAS HORAS o incluso DÍAS.\n\nProcesará miles de subastas del BOE y descargará todos los archivos.\n\n¿Estás seguro de que quieres iniciarlo?')) {
+      return;
+    }
+
+    setScrapingStatus('Iniciando scraping...');
+    try {
+      const response = await fetch(`${API_URL}/api/scraping/iniciar`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      const data = await response.json();
+      
+      if (data.success) {
+        setScrapingStatus('✅ ' + data.message);
+        alert('✅ Scraping iniciado correctamente!\n\n' + data.message + '\n\nPuedes ver el progreso en los Logs de Render.');
+      } else {
+        setScrapingStatus('❌ Error: ' + (data.error || 'Error desconocido'));
+        alert('Error al iniciar scraping: ' + (data.error || 'Error desconocido'));
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      setScrapingStatus('❌ Error de conexión');
+      alert('Error conectando con el servidor: ' + error.message);
     }
   };
 
@@ -97,15 +128,67 @@ export default function App() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
       <header className="bg-gradient-to-r from-blue-900 to-indigo-900 text-white shadow-lg">
         <div className="max-w-7xl mx-auto px-4 py-6">
-          <div className="flex items-center gap-3">
-            <Gavel className="w-10 h-10" />
-            <div>
-              <h1 className="text-3xl font-bold">Auction Brokers</h1>
-              <p className="text-blue-200 text-sm">Portal Profesional de Subastas BOE</p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Gavel className="w-10 h-10" />
+              <div>
+                <h1 className="text-3xl font-bold">Auction Brokers</h1>
+                <p className="text-blue-200 text-sm">Portal Profesional de Subastas BOE</p>
+              </div>
             </div>
+            <button
+              onClick={() => setShowAdmin(!showAdmin)}
+              className="flex items-center gap-2 bg-blue-800 hover:bg-blue-700 px-4 py-2 rounded-lg transition-colors"
+            >
+              <Settings className="w-5 h-5" />
+              Admin
+            </button>
           </div>
         </div>
       </header>
+
+      {showAdmin && (
+        <div className="max-w-7xl mx-auto px-4 py-4">
+          <div className="bg-yellow-50 border-2 border-yellow-400 rounded-xl p-6 shadow-lg">
+            <div className="flex items-start gap-4">
+              <div className="bg-yellow-400 p-3 rounded-lg">
+                <Database className="w-8 h-8 text-yellow-900" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-xl font-bold text-gray-900 mb-2">Panel de Administración - Scraping BOE</h3>
+                <p className="text-gray-700 mb-4">
+                  Inicia el proceso de scraping completo del BOE. Este proceso puede tardar <strong>varias horas o días</strong>.
+                </p>
+                <div className="bg-white rounded-lg p-4 mb-4">
+                  <h4 className="font-semibold text-gray-900 mb-2">⚠️ Información importante:</h4>
+                  <ul className="text-sm text-gray-700 space-y-1 list-disc list-inside">
+                    <li>Procesará todas las provincias de España (52 en total)</li>
+                    <li>Extraerá todos los tipos de bienes y estados de subasta</li>
+                    <li>Descargará PDFs e imágenes de cada subasta</li>
+                    <li>Almacenará todo en la base de datos PostgreSQL y AWS S3</li>
+                    <li>Puede consumir recursos significativos del servidor</li>
+                  </ul>
+                </div>
+                <div className="flex items-center gap-4">
+                  <button
+                    onClick={iniciarScraping}
+                    className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold flex items-center gap-2 transition-colors shadow-md"
+                  >
+                    <Database className="w-5 h-5" />
+                    Iniciar Scraping Completo
+                  </button>
+                  {scrapingStatus && (
+                    <p className="text-sm font-medium text-gray-700">{scrapingStatus}</p>
+                  )}
+                </div>
+                <p className="text-xs text-gray-600 mt-3">
+                  💡 Tip: Puedes ver el progreso en tiempo real en los Logs de Render
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="max-w-7xl mx-auto px-4 py-8">
         <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
