@@ -2,7 +2,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
 
-DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://auctionbrokers_user:q91mV3yzcNE2j34W8zooZ6prhmkwRn9R@dpg-d3hug6m3jp1c73fs9brg-a.frankfurt-postgres.render.com/auctionbrokers')
+DATABASE_URL = os.getenv('DATABASE_URL')
 
 def get_db_connection():
     """Crear conexión a PostgreSQL"""
