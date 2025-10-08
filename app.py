@@ -5,145 +5,229 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
 import os
 from datetime import datetime
+from database import (
+    init_database, obtener_subastas, obtener_imagenes_subasta,
+    obtener_documentos_subasta, get_db_connection
+)
+from scraper import scraping_completo
+import threading
 
 app = Flask(__name__)
 CORS(app)
 
-SUBASTAS = [
-    {
-        "id": "SUB-2025-001234",
-        "titulo": "Vivienda en Madrid Centro",
-        "descripcion": "Piso 95m², 3 habitaciones, 2 baños, reformado, zona centro",
-        "tipo_bien": "Inmueble",
-        "tipo_subasta": "Judicial",
-        "estado": "Abierta",
-        "lotes": "Lote único",
-        "provincia": "Madrid",
-        "localidad": "Madrid",
-        "direccion": "Calle Gran Vía 45, 28013 Madrid",
-        "coordenadas": {"lat": 40.4200, "lng": -3.7025},
-        "referencia_catastral": "1234567VK1234N0001AB",
-        "marca": "",
-        "modelo": "",
-        "matricula": "",
-        "cantidad_reclamada": 200000,
-        "valor_tasacion": 250000,
-        "valor_subasta": 250000,
-        "tramos_pujas": 2000,
-        "puja_minima": 187500,
-        "puja_maxima": 250000,
-        "importe_deposito": 25000,
-        "nombre": "Juzgado Primera Instancia nº 5 de Madrid",
-        "fecha_inicio": "2025-09-15",
-        "fecha_conclusion": "2025-10-15",
-        "imagenes": [
-            {"nombre": "fachada.jpg", "url": "https://placehold.co/800x600/3b82f6/white?text=Madrid"},
-            {"nombre": "interior.jpg", "url": "https://placehold.co/800x600/10b981/white?text=Interior"}
-        ],
-        "documentos": [
-            {"nombre": "nota_simple.pdf", "size": "245 KB"},
-            {"nombre": "tasacion.pdf", "size": "1.2 MB"}
-        ]
-    },
-    {
-        "id": "SUB-2025-001235",
-        "titulo": "Mercedes Clase C 220d",
-        "descripcion": "Año 2020, 45.000 km, perfecto estado, ITV pasada, único dueño",
-        "tipo_bien": "Vehículo",
-        "tipo_subasta": "Notarial",
-        "estado": "Abierta",
-        "lotes": "Lote 1 de 3",
-        "provincia": "Barcelona",
-        "localidad": "Barcelona",
-        "direccion": "Depósito Municipal Zona Franca, Barcelona",
-        "coordenadas": {"lat": 41.3543, "lng": 2.1202},
-        "referencia_catastral": "",
-        "marca": "Mercedes-Benz",
-        "modelo": "Clase C 220d",
-        "matricula": "1234-ABC",
-        "cantidad_reclamada": 30000,
-        "valor_tasacion": 35000,
-        "valor_subasta": 35000,
-        "tramos_pujas": 500,
-        "puja_minima": 26250,
-        "puja_maxima": 35000,
-        "importe_deposito": 3500,
-        "nombre": "Agencia Tributaria - Barcelona",
-        "fecha_inicio": "2025-09-20",
-        "fecha_conclusion": "2025-10-20",
-        "imagenes": [
-            {"nombre": "frontal.jpg", "url": "https://placehold.co/800x600/1e40af/white?text=Mercedes"},
-            {"nombre": "lateral.jpg", "url": "https://placehold.co/800x600/1e3a8a/white?text=Lateral"}
-        ],
-        "documentos": [
-            {"nombre": "ficha_tecnica.pdf", "size": "156 KB"}
-        ]
-    },
-    {
-        "id": "SUB-2025-001236",
-        "titulo": "Apartamento primera línea playa Marbella",
-        "descripcion": "65m², 2 habitaciones, vistas al mar, terraza 20m², piscina comunitaria",
-        "tipo_bien": "Inmueble",
-        "tipo_subasta": "Judicial",
-        "estado": "Abierta",
-        "lotes": "Lote único",
-        "provincia": "Málaga",
-        "localidad": "Marbella",
-        "direccion": "Paseo Marítimo Rey de España 12, 29602 Marbella",
-        "coordenadas": {"lat": 36.5105, "lng": -4.8854},
-        "referencia_catastral": "9876543VK9876N0001CD",
-        "marca": "",
-        "modelo": "",
-        "matricula": "",
-        "cantidad_reclamada": 280000,
-        "valor_tasacion": 320000,
-        "valor_subasta": 320000,
-        "tramos_pujas": 3000,
-        "puja_minima": 240000,
-        "puja_maxima": 320000,
-        "importe_deposito": 32000,
-        "nombre": "Juzgado Primera Instancia nº 7 de Málaga",
-        "fecha_inicio": "2025-09-10",
-        "fecha_conclusion": "2025-10-10",
-        "imagenes": [
-            {"nombre": "vistas.jpg", "url": "https://placehold.co/800x600/06b6d4/white?text=Vistas"},
-            {"nombre": "salon.jpg", "url": "https://placehold.co/800x600/0891b2/white?text=Salon"}
-        ],
-        "documentos": [
-            {"nombre": "cert_energetico.pdf", "size": "210 KB"}
-        ]
-    }
-]
+# Inicializar base de datos al arrancar
+init_database()
 
 @app.route('/')
 def home():
     return jsonify({
         "message": "Auction Brokers API",
         "status": "running",
-        "version": "2.0",
-        "endpoints": ["/api/health", "/api/subastas", "/api/exportar"]
+        "version": "3.0",
+        "endpoints": [
+            "/api/health",
+            "/api/subastas",
+            "/api/subasta/<id>",
+            "/api/exportar",
+            "/api/stats",
+            "/api/scraping/iniciar"
+        ]
     })
 
 @app.route('/api/health')
 def health():
-    return jsonify({"success": True, "status": "running"})
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute('SELECT COUNT(*) as total FROM subastas')
+        result = cur.fetchone()
+        total = result['total'] if result else 0
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "status": "running",
+            "database": "connected",
+            "total_subastas": total
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "status": "error",
+            "error": str(e)
+        }), 500
 
 @app.route('/api/subastas')
 def get_subastas():
-    provincia = request.args.get('provincia', '')
-    tipo = request.args.get('tipo', '')
-    search = request.args.get('search', '')
-    
-    resultados = SUBASTAS
-    
-    if provincia:
-        resultados = [s for s in resultados if s.get('provincia') == provincia]
-    if tipo:
-        resultados = [s for s in resultados if s.get('tipo_bien') == tipo]
-    if search:
-        resultados = [s for s in resultados if search.lower() in s.get('titulo', '').lower()]
-    
-    return jsonify({"success": True, "data": resultados, "total": len(resultados)})
+    try:
+        provincia = request.args.get('provincia', '')
+        tipo = request.args.get('tipo', '')
+        search = request.args.get('search', '')
+        
+        filtros = {}
+        if provincia:
+            filtros['provincia'] = provincia
+        if tipo:
+            filtros['tipo_bien'] = tipo
+        if search:
+            filtros['search'] = search
+        
+        resultados = obtener_subastas(filtros)
+        
+        # Convertir resultados a formato JSON serializable
+        subastas = []
+        for subasta in resultados:
+            subasta_dict = dict(subasta)
+            
+            # Convertir fechas a string
+            if subasta_dict.get('fecha_inicio'):
+                subasta_dict['fecha_inicio'] = subasta_dict['fecha_inicio'].isoformat()
+            if subasta_dict.get('fecha_conclusion'):
+                subasta_dict['fecha_conclusion'] = subasta_dict['fecha_conclusion'].isoformat()
+            if subasta_dict.get('fecha_scraping'):
+                subasta_dict['fecha_scraping'] = subasta_dict['fecha_scraping'].isoformat()
+            if subasta_dict.get('actualizado'):
+                subasta_dict['actualizado'] = subasta_dict['actualizado'].isoformat()
+            
+            # Convertir Decimal a float
+            for key in ['cantidad_reclamada', 'valor_tasacion', 'valor_subasta', 
+                       'tramos_pujas', 'puja_minima', 'puja_maxima', 'importe_deposito',
+                       'latitud', 'longitud']:
+                if subasta_dict.get(key) is not None:
+                    subasta_dict[key] = float(subasta_dict[key])
+            
+            # Agregar coordenadas en formato esperado por el frontend
+            if subasta_dict.get('latitud') and subasta_dict.get('longitud'):
+                subasta_dict['coordenadas'] = {
+                    'lat': float(subasta_dict['latitud']),
+                    'lng': float(subasta_dict['longitud'])
+                }
+            
+            # Obtener imágenes y documentos
+            imagenes = obtener_imagenes_subasta(subasta_dict['id'])
+            documentos = obtener_documentos_subasta(subasta_dict['id'])
+            
+            subasta_dict['imagenes'] = [
+                {
+                    'nombre': img['nombre'],
+                    'url': img['url_s3'] or img['url_original']
+                }
+                for img in imagenes
+            ]
+            
+            subasta_dict['documentos'] = [
+                {
+                    'nombre': doc['nombre'],
+                    'url': doc['url_s3'] or doc['url_original'],
+                    'size': f"{doc['size_bytes'] / 1024:.0f} KB" if doc['size_bytes'] else "N/A"
+                }
+                for doc in documentos
+            ]
+            
+            subastas.append(subasta_dict)
+        
+        return jsonify({
+            "success": True,
+            "data": subastas,
+            "total": len(subastas)
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+@app.route('/api/subasta/<subasta_id>')
+def get_subasta_detalle(subasta_id):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute('SELECT * FROM subastas WHERE id = %s', (subasta_id,))
+        subasta = cur.fetchone()
+        
+        if not subasta:
+            return jsonify({"success": False, "error": "Subasta no encontrada"}), 404
+        
+        # Convertir a dict y preparar datos
+        subasta_dict = dict(subasta)
+        
+        # Convertir fechas
+        if subasta_dict.get('fecha_inicio'):
+            subasta_dict['fecha_inicio'] = subasta_dict['fecha_inicio'].isoformat()
+        if subasta_dict.get('fecha_conclusion'):
+            subasta_dict['fecha_conclusion'] = subasta_dict['fecha_conclusion'].isoformat()
+        
+        # Obtener imágenes y documentos
+        imagenes = obtener_imagenes_subasta(subasta_id)
+        documentos = obtener_documentos_subasta(subasta_id)
+        
+        subasta_dict['imagenes'] = [dict(img) for img in imagenes]
+        subasta_dict['documentos'] = [dict(doc) for doc in documentos]
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify({"success": True, "data": subasta_dict})
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/stats')
+def get_stats():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Total subastas
+        cur.execute('SELECT COUNT(*) as total FROM subastas')
+        total = cur.fetchone()['total']
+        
+        # Por provincia
+        cur.execute('''
+            SELECT provincia, COUNT(*) as cantidad
+            FROM subastas
+            GROUP BY provincia
+            ORDER BY cantidad DESC
+            LIMIT 10
+        ''')
+        por_provincia = [dict(row) for row in cur.fetchall()]
+        
+        # Por tipo de bien
+        cur.execute('''
+            SELECT tipo_bien, COUNT(*) as cantidad
+            FROM subastas
+            GROUP BY tipo_bien
+            ORDER BY cantidad DESC
+        ''')
+        por_tipo = [dict(row) for row in cur.fetchall()]
+        
+        # Por estado
+        cur.execute('''
+            SELECT estado, COUNT(*) as cantidad
+            FROM subastas
+            GROUP BY estado
+            ORDER BY cantidad DESC
+        ''')
+        por_estado = [dict(row) for row in cur.fetchall()]
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "stats": {
+                "total": total,
+                "por_provincia": por_provincia,
+                "por_tipo": por_tipo,
+                "por_estado": por_estado
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/exportar', methods=['POST'])
 def exportar_excel():
@@ -152,9 +236,17 @@ def exportar_excel():
         ids = data.get('ids', [])
         
         if not ids:
-            subastas_exportar = SUBASTAS
+            # Exportar todas
+            subastas_exportar = obtener_subastas()
         else:
-            subastas_exportar = [s for s in SUBASTAS if s.get('id') in ids]
+            # Exportar seleccionadas
+            conn = get_db_connection()
+            cur = conn.cursor()
+            placeholders = ','.join(['%s'] * len(ids))
+            cur.execute(f'SELECT * FROM subastas WHERE id IN ({placeholders})', ids)
+            subastas_exportar = cur.fetchall()
+            cur.close()
+            conn.close()
         
         # Crear Excel
         wb = openpyxl.Workbook()
@@ -166,7 +258,7 @@ def exportar_excel():
         header_font = Font(bold=True, color="FFFFFF", size=11)
         header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         
-        # Encabezados (25 columnas exactas)
+        # Encabezados
         headers = [
             "RATIO 1 - cantidad reclamada vs valor subasta",
             "RATIO 2 - Puja Máxima vs Valor Subasta",
@@ -206,51 +298,60 @@ def exportar_excel():
         
         # Escribir datos
         for row_num, subasta in enumerate(subastas_exportar, 2):
-            coords = subasta.get('coordenadas', {})
-            google_maps_url = ""
-            if coords and coords.get('lat') and coords.get('lng'):
-                google_maps_url = f"https://www.google.com/maps/search/?api=1&query={coords['lat']},{coords['lng']}"
+            subasta_dict = dict(subasta)
             
-            # RATIO 1: Fórmula de Excel
+            google_maps_url = ""
+            if subasta_dict.get('latitud') and subasta_dict.get('longitud'):
+                lat = float(subasta_dict['latitud'])
+                lng = float(subasta_dict['longitud'])
+                google_maps_url = f"https://www.google.com/maps/search/?api=1&query={lat},{lng}"
+            
+            # RATIO 1
             ws.cell(row=row_num, column=1).value = f"=IF(Q{row_num}=0,0,(Q{row_num}/S{row_num})*100)"
             ws.cell(row=row_num, column=1).number_format = '0.00"%"'
             
-            # RATIO 2: Fórmula de Excel
+            # RATIO 2
             ws.cell(row=row_num, column=2).value = f"=IF(V{row_num}=0,0,(V{row_num}/S{row_num})*100)"
             ws.cell(row=row_num, column=2).number_format = '0.00"%"'
             
             # Resto de columnas
-            ws.cell(row=row_num, column=3).value = subasta.get('estado', '')
-            ws.cell(row=row_num, column=4).value = subasta.get('tipo_subasta', '')
-            ws.cell(row=row_num, column=5).value = subasta.get('tipo_bien', '')
-            ws.cell(row=row_num, column=6).value = subasta.get('id', '')
-            ws.cell(row=row_num, column=7).value = subasta.get('lotes', '')
-            ws.cell(row=row_num, column=8).value = subasta.get('provincia', '')
-            ws.cell(row=row_num, column=9).value = subasta.get('localidad', '')
-            ws.cell(row=row_num, column=10).value = subasta.get('direccion', '')
+            ws.cell(row=row_num, column=3).value = subasta_dict.get('estado', '')
+            ws.cell(row=row_num, column=4).value = subasta_dict.get('tipo_subasta', '')
+            ws.cell(row=row_num, column=5).value = subasta_dict.get('tipo_bien', '')
+            ws.cell(row=row_num, column=6).value = subasta_dict.get('id', '')
+            ws.cell(row=row_num, column=7).value = subasta_dict.get('lotes', '')
+            ws.cell(row=row_num, column=8).value = subasta_dict.get('provincia', '')
+            ws.cell(row=row_num, column=9).value = subasta_dict.get('localidad', '')
+            ws.cell(row=row_num, column=10).value = subasta_dict.get('direccion', '')
             
-            # Google Maps como hipervínculo
             if google_maps_url:
                 cell = ws.cell(row=row_num, column=11)
                 cell.value = "Ver en Google Maps"
                 cell.hyperlink = google_maps_url
                 cell.font = Font(color="0563C1", underline="single")
             
-            ws.cell(row=row_num, column=12).value = subasta.get('descripcion', '')
-            ws.cell(row=row_num, column=13).value = subasta.get('referencia_catastral', '')
-            ws.cell(row=row_num, column=14).value = subasta.get('marca', '')
-            ws.cell(row=row_num, column=15).value = subasta.get('modelo', '')
-            ws.cell(row=row_num, column=16).value = subasta.get('matricula', '')
-            ws.cell(row=row_num, column=17).value = subasta.get('cantidad_reclamada', 0)
-            ws.cell(row=row_num, column=18).value = subasta.get('valor_tasacion', 0)
-            ws.cell(row=row_num, column=19).value = subasta.get('valor_subasta', 0)
-            ws.cell(row=row_num, column=20).value = subasta.get('tramos_pujas', 0)
-            ws.cell(row=row_num, column=21).value = subasta.get('puja_minima', 0)
-            ws.cell(row=row_num, column=22).value = subasta.get('puja_maxima', 0)
-            ws.cell(row=row_num, column=23).value = subasta.get('importe_deposito', 0)
-            ws.cell(row=row_num, column=24).value = subasta.get('nombre', '')
-            ws.cell(row=row_num, column=25).value = subasta.get('fecha_inicio', '')
-            ws.cell(row=row_num, column=26).value = subasta.get('fecha_conclusion', '')
+            ws.cell(row=row_num, column=12).value = subasta_dict.get('descripcion', '')
+            ws.cell(row=row_num, column=13).value = subasta_dict.get('referencia_catastral', '')
+            ws.cell(row=row_num, column=14).value = subasta_dict.get('marca', '')
+            ws.cell(row=row_num, column=15).value = subasta_dict.get('modelo', '')
+            ws.cell(row=row_num, column=16).value = subasta_dict.get('matricula', '')
+            ws.cell(row=row_num, column=17).value = float(subasta_dict.get('cantidad_reclamada', 0) or 0)
+            ws.cell(row=row_num, column=18).value = float(subasta_dict.get('valor_tasacion', 0) or 0)
+            ws.cell(row=row_num, column=19).value = float(subasta_dict.get('valor_subasta', 0) or 0)
+            ws.cell(row=row_num, column=20).value = float(subasta_dict.get('tramos_pujas', 0) or 0)
+            ws.cell(row=row_num, column=21).value = float(subasta_dict.get('puja_minima', 0) or 0)
+            ws.cell(row=row_num, column=22).value = float(subasta_dict.get('puja_maxima', 0) or 0)
+            ws.cell(row=row_num, column=23).value = float(subasta_dict.get('importe_deposito', 0) or 0)
+            ws.cell(row=row_num, column=24).value = subasta_dict.get('nombre_acreedor', '')
+            
+            # Fechas
+            fecha_inicio = subasta_dict.get('fecha_inicio')
+            if fecha_inicio:
+                ws.cell(row=row_num, column=25).value = fecha_inicio.strftime('%d/%m/%Y') if hasattr(fecha_inicio, 'strftime') else str(fecha_inicio)
+            
+            fecha_conclusion = subasta_dict.get('fecha_conclusion')
+            if fecha_conclusion:
+                ws.cell(row=row_num, column=26).value = fecha_conclusion.strftime('%d/%m/%Y') if hasattr(fecha_conclusion, 'strftime') else str(fecha_conclusion)
         
         # Ajustar anchos de columna
         column_widths = [35, 35, 12, 15, 12, 18, 15, 12, 15, 40, 20, 50, 25, 15, 15, 12, 18, 18, 15, 18, 15, 15, 18, 40, 15, 18]
@@ -278,5 +379,25 @@ def exportar_excel():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
+@app.route('/api/scraping/iniciar', methods=['POST'])
+def iniciar_scraping():
+    """Iniciar scraping en segundo plano"""
+    try:
+        # Ejecutar scraping en un thread separado
+        thread = threading.Thread(target=scraping_completo)
+        thread.daemon = True
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": "Scraping iniciado en segundo plano. Puede tardar varias horas."
+        })
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
