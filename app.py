@@ -16,7 +16,10 @@ app = Flask(__name__)
 CORS(app)
 
 # Inicializar base de datos al arrancar
-init_database()
+try:
+    init_database()
+except Exception as e:
+    print(f"⚠️ Error inicializando base de datos: {e}")
 
 @app.route('/')
 def home():
