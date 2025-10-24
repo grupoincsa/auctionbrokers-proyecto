@@ -1,14 +1,22 @@
+"""
+SCRAPER BOE - VERSIÓN FINAL CORREGIDA
+Basado en el HTML real del portal de subastas del BOE
+"""
 
 import requests
 from bs4 import BeautifulSoup
-import boto3
-from datetime import datetime
 import time
 import os
 import re
-from database import insertar_subasta, insertar_imagen, insertar_documento
+from datetime import datetime
+from database import get_db_connection
+import boto3
 
-# Configuración AWS S3
+# =====================================================
+# CONFIGURACIÓN
+# =====================================================
+
+# AWS S3
 AWS_ACCESS_KEY = os.getenv('AWS_ACCESS_KEY')
 AWS_SECRET_KEY = os.getenv('AWS_SECRET_KEY')
 AWS_BUCKET = os.getenv('AWS_BUCKET', 'auctionbrokers-files')
@@ -21,376 +29,290 @@ s3_client = boto3.client(
     region_name=AWS_REGION
 )
 
-# Configuración del scraper
+# URLs del BOE
 BASE_URL = 'https://subastas.boe.es'
 SEARCH_URL = f'{BASE_URL}/subastas_ava.php'
 
-# Provincias españolas
-PROVINCIAS = [
-    'Álava', 'Albacete', 'Alicante', 'Almería', 'Asturias', 'Ávila', 'Badajoz',
-    'Baleares', 'Barcelona', 'Burgos', 'Cáceres', 'Cádiz', 'Cantabria', 'Castellón',
-    'Ceuta', 'Ciudad Real', 'Córdoba', 'Cuenca', 'Gerona', 'Granada', 'Guadalajara',
-    'Guipúzcoa', 'Huelva', 'Huesca', 'Jaén', 'La Coruña', 'La Rioja', 'Las Palmas',
-    'León', 'Lérida', 'Lugo', 'Madrid', 'Málaga', 'Melilla', 'Murcia', 'Navarra',
-    'Orense', 'Palencia', 'Pontevedra', 'Salamanca', 'Santa Cruz de Tenerife', 'Segovia',
-    'Sevilla', 'Soria', 'Tarragona', 'Teruel', 'Toledo', 'Valencia', 'Valladolid',
-    'Vizcaya', 'Zamora', 'Zaragoza'
-]
+# Provincias españolas (códigos del 01 al 52)
+PROVINCIAS = {
+    '28': 'Madrid',
+    '08': 'Barcelona',
+    '41': 'Sevilla',
+    '46': 'Valencia',
+    '29': 'Málaga',
+    '48': 'Vizcaya',
+    '35': 'Las Palmas',
+    '07': 'Baleares',
+    '03': 'Alicante',
+    '30': 'Murcia'
+    # Agregar más según necesites
+}
 
-TIPOS_BIEN = [
-    'Inmuebles - Vivienda',
-    'Inmuebles - Local comercial',
-    'Inmuebles - Garaje',
-    'Inmuebles - Trastero',
-    'Inmuebles - Nave industrial',
-    'Inmuebles - Solar',
-    'Inmuebles - Finca rústica',
-    'Inmuebles - Otros',
-    'Vehículos - Turismos',
-    'Vehículos - Vehículos industriales',
-    'Vehículos - Otros',
-    'Otros bienes muebles - Aeronaves',
-    'Otros bienes muebles - Buques',
-    'Otros bienes muebles - Maquinaria',
-    'Otros bienes muebles - Joyas, obras de arte',
-    'Otros bienes muebles - Mobiliario',
-    'Otros bienes muebles - Otros'
-]
+# Valores exactos según el HTML del BOE
+TIPOS_SUBASTA = {
+    'J': 'Judicial',
+    'N': 'Notarial',
+    'A': 'AEAT',
+}
 
-TIPOS_SUBASTA = [
-    'Judicial',
-    'Notarial',
-    'AEAT',
-    'Otras administraciones tributarias',
-    'Subastas administrativas generales'
-]
+ESTADOS = {
+    'EJ': 'Celebrándose',
+    'PU': 'Próxima apertura',
+}
 
-ESTADOS = [
-    'Próxima apertura',
-    'Celebrándose',
-    'Concluida en el portal de subastas',
-    'Finalizada por autoridad gestora'
-]
+TIPOS_BIEN = {
+    'I': 'Inmuebles',
+    'V': 'Vehículos',
+    'M': 'Otros bienes'
+}
 
-def subir_archivo_s3(archivo_bytes, ruta_s3, content_type='application/octet-stream'):
-    """Subir archivo a AWS S3"""
+# =====================================================
+# FUNCIONES AUXILIARES
+# =====================================================
+
+def buscar_subastas(provincia_cod, tipo_subasta, estado, tipo_bien):
+    """
+    Busca subastas usando POST tal como lo hace el formulario del BOE
+    """
+    print(f"🔍 Buscando: {PROVINCIAS.get(provincia_cod, provincia_cod)} | {TIPOS_SUBASTA.get(tipo_subasta, 'Todos')} | {ESTADOS.get(estado, 'Todos')} | {TIPOS_BIEN.get(tipo_bien, 'Todos')}")
+    
+    # Datos del formulario (según el HTML real que me pasaste)
+    payload = {
+        'campo[0]': 'ORIGEN',
+        'dato[0]': tipo_subasta,
+        'campo[2]': 'ESTADO_SUB',
+        'dato[2]': estado,
+        'campo[3]': 'TIPO_BIEN',
+        'dato[3]': tipo_bien,
+        'campo[8]': 'BIEN.COD_PROVINCIA',
+        'dato[8]': provincia_cod,
+        'page_hits': '500',  # Máximo permitido
+        'accion': 'Buscar'
+    }
+    
     try:
-        s3_client.put_object(
-            Bucket=AWS_BUCKET,
-            Key=ruta_s3,
-            Body=archivo_bytes,
-            ContentType=content_type,
-            ACL='public-read'
-        )
-        url_s3 = f"https://{AWS_BUCKET}.s3.{AWS_REGION}.amazonaws.com/{ruta_s3}"
-        return url_s3
-    except Exception as e:
-        print(f"❌ Error subiendo a S3: {e}")
-        return None
-
-def descargar_archivo(url):
-    """Descargar archivo desde URL"""
-    try:
-        response = requests.get(url, timeout=30)
-        if response.status_code == 200:
-            return response.content
-        return None
-    except Exception as e:
-        print(f"❌ Error descargando {url}: {e}")
-        return None
-
-def limpiar_texto(texto):
-    """Limpiar y normalizar texto"""
-    if not texto:
-        return ''
-    return ' '.join(texto.strip().split())
-
-def extraer_numero(texto):
-    """Extraer número de texto"""
-    if not texto:
-        return 0
-    numeros = re.findall(r'[\d,.]+', texto.replace('.', '').replace(',', '.'))
-    return float(numeros[0]) if numeros else 0
-
-def parsear_detalle_subasta(url_detalle):
-    """Extraer información detallada de una subasta"""
-    try:
-        response = requests.get(url_detalle, timeout=30)
-        soup = BeautifulSoup(response.content, 'lxml')
-        
-        datos = {
-            'id': '',
-            'titulo': '',
-            'descripcion': '',
-            'tipo_bien': '',
-            'tipo_subasta': '',
-            'estado': '',
-            'lotes': '',
-            'provincia': '',
-            'localidad': '',
-            'direccion': '',
-            'latitud': None,
-            'longitud': None,
-            'referencia_catastral': '',
-            'marca': '',
-            'modelo': '',
-            'matricula': '',
-            'cantidad_reclamada': 0,
-            'valor_tasacion': 0,
-            'valor_subasta': 0,
-            'tramos_pujas': 0,
-            'puja_minima': 0,
-            'puja_maxima': 0,
-            'importe_deposito': 0,
-            'nombre_acreedor': '',
-            'fecha_inicio': None,
-            'fecha_conclusion': None,
-            'url_detalle': url_detalle
+        # Headers para simular navegador
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml',
+            'Accept-Language': 'es-ES,es;q=0.9',
         }
         
-        # Extraer ID de la URL
-        match_id = re.search(r'idSub=([^&]+)', url_detalle)
-        if match_id:
-            datos['id'] = match_id.group(1)
+        response = requests.post(SEARCH_URL, data=payload, headers=headers, timeout=30)
         
-        # Extraer título
-        titulo_elem = soup.find('h1')
-        if titulo_elem:
-            datos['titulo'] = limpiar_texto(titulo_elem.text)
+        if response.status_code != 200:
+            print(f"  ❌ Error HTTP {response.status_code}")
+            return []
         
-        # Extraer campos de la tabla de información
-        filas = soup.find_all('tr')
-        for fila in filas:
-            celdas = fila.find_all(['td', 'th'])
-            if len(celdas) >= 2:
-                campo = limpiar_texto(celdas[0].text).lower()
-                valor = limpiar_texto(celdas[1].text)
-                
-                if 'descripción' in campo:
-                    datos['descripcion'] = valor
-                elif 'tipo de bien' in campo:
-                    datos['tipo_bien'] = valor
-                elif 'tipo de subasta' in campo:
-                    datos['tipo_subasta'] = valor
-                elif 'estado' in campo:
-                    datos['estado'] = valor
-                elif 'lote' in campo:
-                    datos['lotes'] = valor
-                elif 'provincia' in campo:
-                    datos['provincia'] = valor
-                elif 'localidad' in campo:
-                    datos['localidad'] = valor
-                elif 'dirección' in campo:
-                    datos['direccion'] = valor
-                elif 'referencia catastral' in campo:
-                    datos['referencia_catastral'] = valor
-                elif 'marca' in campo:
-                    datos['marca'] = valor
-                elif 'modelo' in campo:
-                    datos['modelo'] = valor
-                elif 'matrícula' in campo:
-                    datos['matricula'] = valor
-                elif 'cantidad reclamada' in campo:
-                    datos['cantidad_reclamada'] = extraer_numero(valor)
-                elif 'valor de tasación' in campo or 'valor tasación' in campo:
-                    datos['valor_tasacion'] = extraer_numero(valor)
-                elif 'valor subasta' in campo or 'valor de subasta' in campo:
-                    datos['valor_subasta'] = extraer_numero(valor)
-                elif 'tramo' in campo:
-                    datos['tramos_pujas'] = extraer_numero(valor)
-                elif 'puja mínima' in campo:
-                    datos['puja_minima'] = extraer_numero(valor)
-                elif 'puja máxima' in campo:
-                    datos['puja_maxima'] = extraer_numero(valor)
-                elif 'importe del depósito' in campo or 'depósito' in campo:
-                    datos['importe_deposito'] = extraer_numero(valor)
-                elif 'acreedor' in campo or 'autoridad' in campo:
-                    datos['nombre_acreedor'] = valor
-                elif 'fecha de inicio' in campo or 'apertura' in campo:
-                    try:
-                        datos['fecha_inicio'] = datetime.strptime(valor, '%d/%m/%Y').date()
-                    except:
-                        pass
-                elif 'fecha de conclusión' in campo or 'cierre' in campo:
-                    try:
-                        datos['fecha_conclusion'] = datetime.strptime(valor, '%d/%m/%Y').date()
-                    except:
-                        pass
+        # Parsear HTML
+        soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Geocodificar dirección si existe
-        if datos['direccion']:
+        # Verificar si hay error
+        error = soup.find('div', class_='error')
+        if error:
+            print(f"  ⚠️ Error del BOE: {error.get_text(strip=True)}")
+            return []
+        
+        # Buscar resultados (según estructura HTML real)
+        resultados = soup.select('li.resultado-busqueda')
+        
+        if not resultados:
+            print(f"  📭 Sin resultados")
+            return []
+        
+        print(f"  ✅ Encontrados: {len(resultados)} resultados")
+        
+        subastas = []
+        for resultado in resultados:
             try:
-                direccion_completa = f"{datos['direccion']}, {datos['localidad']}, {datos['provincia']}, España"
-                coords = geocodificar_direccion(direccion_completa)
-                if coords:
-                    datos['latitud'] = coords['lat']
-                    datos['longitud'] = coords['lng']
-            except:
-                pass
-        
-        return datos
-        
-    except Exception as e:
-        print(f"❌ Error parseando detalle: {e}")
-        return None
-
-def geocodificar_direccion(direccion):
-    """Obtener coordenadas de Google Maps (Nominatim como alternativa gratuita)"""
-    try:
-        url = "https://nominatim.openstreetmap.org/search"
-        params = {
-            'q': direccion,
-            'format': 'json',
-            'limit': 1
-        }
-        headers = {'User-Agent': 'AuctionBrokers/1.0'}
-        
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            if data:
-                return {
-                    'lat': float(data[0]['lat']),
-                    'lng': float(data[0]['lon'])
-                }
-    except:
-        pass
-    return None
-
-def descargar_archivos_subasta(subasta_id, soup):
-    """Descargar imágenes y documentos de una subasta"""
-    imagenes = []
-    documentos = []
-    
-    # Buscar imágenes
-    imgs = soup.find_all('img', class_=re.compile('foto|imagen|gallery'))
-    for idx, img in enumerate(imgs):
-        src = img.get('src')
-        if src and not src.startswith('data:'):
-            if not src.startswith('http'):
-                src = f"{BASE_URL}/{src}"
-            
-            archivo = descargar_archivo(src)
-            if archivo:
-                extension = src.split('.')[-1].split('?')[0]
-                nombre = f"imagen_{idx + 1}.{extension}"
-                ruta_s3 = f"subastas/{subasta_id}/imagenes/{nombre}"
+                # Extraer título (contiene el ID)
+                h3 = resultado.find('h3')
+                if not h3:
+                    continue
                 
-                url_s3 = subir_archivo_s3(archivo, ruta_s3, f'image/{extension}')
-                if url_s3:
-                    imagen_data = {
-                        'nombre': nombre,
-                        'url_original': src,
-                        'url_s3': url_s3,
-                        'size_bytes': len(archivo)
-                    }
-                    imagenes.append(imagen_data)
-                    insertar_imagen(subasta_id, imagen_data)
-    
-    # Buscar documentos PDF
-    links = soup.find_all('a', href=re.compile(r'\.pdf|documento', re.I))
-    for idx, link in enumerate(links):
-        href = link.get('href')
-        if href:
-            if not href.startswith('http'):
-                href = f"{BASE_URL}/{href}"
-            
-            archivo = descargar_archivo(href)
-            if archivo:
-                nombre = link.text.strip() or f"documento_{idx + 1}.pdf"
-                nombre = re.sub(r'[^\w\s-]', '', nombre)[:100] + '.pdf'
-                ruta_s3 = f"subastas/{subasta_id}/documentos/{nombre}"
+                titulo_completo = h3.get_text(strip=True)
                 
-                url_s3 = subir_archivo_s3(archivo, ruta_s3, 'application/pdf')
-                if url_s3:
-                    doc_data = {
-                        'nombre': nombre,
-                        'tipo': 'pdf',
-                        'url_original': href,
-                        'url_s3': url_s3,
-                        'size_bytes': len(archivo)
-                    }
-                    documentos.append(doc_data)
-                    insertar_documento(subasta_id, doc_data)
-    
-    return imagenes, documentos
-
-def buscar_subastas(provincia, tipo_bien, tipo_subasta, estado):
-    """Buscar subastas con filtros específicos"""
-    try:
-        params = {
-            'campo[0]': 'PROVINCIA',
-            'dato[0]': provincia,
-            'campo[1]': 'TIPO_BIEN',
-            'dato[1]': tipo_bien,
-            'campo[2]': 'TIPO_SUBASTA',
-            'dato[2]': tipo_subasta,
-            'campo[3]': 'ESTADO',
-            'dato[3]': estado
-        }
+                # Extraer ID de subasta (formato: "SUBASTA SUB-XX-YYYY-NNNNNN")
+                match = re.search(r'SUB-[A-Z]{2}-\d{4}-\d+', titulo_completo)
+                if not match:
+                    continue
+                
+                id_subasta = match.group(0)
+                
+                # Extraer URL de detalle
+                link = resultado.select_one('a.resultado-busqueda-link-defecto')
+                if not link or not link.get('href'):
+                    continue
+                
+                href = link['href']
+                if href.startswith('./'):
+                    href = href[2:]
+                url_detalle = f"{BASE_URL}/{href}"
+                
+                # Extraer información básica
+                h4 = resultado.find('h4')
+                autoridad = h4.get_text(strip=True) if h4 else ''
+                
+                parrafos = resultado.find_all('p')
+                estado_texto = ''
+                descripcion = ''
+                
+                for p in parrafos:
+                    texto = p.get_text(strip=True)
+                    if texto.startswith('Estado:'):
+                        estado_texto = texto.replace('Estado:', '').strip()
+                    elif texto.startswith('Descripción'):
+                        descripcion = texto.replace('Descripción', '').strip()
+                
+                subastas.append({
+                    'id_subasta': id_subasta,
+                    'titulo': titulo_completo,
+                    'autoridad': autoridad,
+                    'estado': estado_texto,
+                    'descripcion': descripcion,
+                    'url_detalle': url_detalle,
+                    'provincia': PROVINCIAS.get(provincia_cod, provincia_cod),
+                    'tipo_bien': TIPOS_BIEN.get(tipo_bien, 'Otros'),
+                    'tipo_subasta': TIPOS_SUBASTA.get(tipo_subasta, 'Otros')
+                })
+                
+            except Exception as e:
+                print(f"  ⚠️ Error parseando resultado: {str(e)}")
+                continue
         
-        response = requests.get(SEARCH_URL, params=params, timeout=30)
-        soup = BeautifulSoup(response.content, 'lxml')
+        time.sleep(2)  # Pausa entre requests
+        return subastas
         
-        # Buscar enlaces a detalles de subastas
-        enlaces = soup.find_all('a', href=re.compile(r'detalleSubasta\.php'))
-        urls_detalle = []
-        
-        for enlace in enlaces:
-            href = enlace.get('href')
-            if href:
-                if not href.startswith('http'):
-                    href = f"{BASE_URL}/{href}"
-                if href not in urls_detalle:
-                    urls_detalle.append(href)
-        
-        return urls_detalle
-        
+    except requests.exceptions.Timeout:
+        print(f"  ⏱️ Timeout en búsqueda")
+        return []
     except Exception as e:
-        print(f"❌ Error en búsqueda: {e}")
+        print(f"  ❌ Error: {str(e)}")
         return []
 
-def scraping_completo():
-    """Realizar scraping completo del BOE"""
-    print("🚀 Iniciando scraping completo del BOE...")
-    total_subastas = 0
+def guardar_subasta_db(subasta_data):
+    """
+    Guarda una subasta en PostgreSQL
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
     
-    for provincia in PROVINCIAS:
-        print(f"\n📍 Scraping provincia: {provincia}")
+    try:
+        # Verificar si ya existe
+        cur.execute(
+            "SELECT id FROM subastas WHERE id_subasta = %s",
+            (subasta_data['id_subasta'],)
+        )
         
-        for tipo_bien in TIPOS_BIEN:
-            for tipo_subasta in TIPOS_SUBASTA:
-                for estado in ESTADOS:
-                    print(f"  🔍 {tipo_bien} | {tipo_subasta} | {estado}")
-                    
-                    urls = buscar_subastas(provincia, tipo_bien, tipo_subasta, estado)
-                    
-                    for url in urls:
-                        try:
-                            print(f"    ⬇️  Procesando: {url[:80]}...")
-                            
-                            # Parsear detalle
-                            datos = parsear_detalle_subasta(url)
-                            if datos and datos['id']:
-                                # Guardar en base de datos
-                                if insertar_subasta(datos):
-                                    total_subastas += 1
-                                    
-                                    # Descargar archivos
-                                    response = requests.get(url, timeout=30)
-                                    soup = BeautifulSoup(response.content, 'lxml')
-                                    descargar_archivos_subasta(datos['id'], soup)
-                                    
-                                    print(f"    ✅ Subasta guardada: {datos['id']}")
-                            
-                            time.sleep(1)
-                            
-                        except Exception as e:
-                            print(f"    ❌ Error: {e}")
-                    
-                    time.sleep(2)
+        if cur.fetchone():
+            print(f"    ⏭️ Ya existe: {subasta_data['id_subasta']}")
+            return False
+        
+        # Insertar nueva subasta
+        cur.execute("""
+            INSERT INTO subastas (
+                id_subasta, titulo, descripcion, tipo_bien, tipo_subasta,
+                estado, provincia, url_detalle, fecha_scraping
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            subasta_data['id_subasta'],
+            subasta_data['titulo'],
+            subasta_data['descripcion'],
+            subasta_data['tipo_bien'],
+            subasta_data['tipo_subasta'],
+            subasta_data['estado'],
+            subasta_data['provincia'],
+            subasta_data['url_detalle'],
+            datetime.now()
+        ))
+        
+        conn.commit()
+        print(f"    ✅ Guardada: {subasta_data['id_subasta']}")
+        return True
+        
+    except Exception as e:
+        conn.rollback()
+        print(f"    ❌ Error BD: {str(e)}")
+        return False
+    finally:
+        cur.close()
+        conn.close()
+
+# =====================================================
+# FUNCIÓN PRINCIPAL
+# =====================================================
+
+def scraping_completo():
+    """
+    Realiza scraping completo pero inteligente del BOE
+    """
+    print("=" * 60)
+    print("🚀 INICIANDO SCRAPING DEL BOE")
+    print("=" * 60)
     
-    print(f"\n✅ Scraping completo finalizado. Total: {total_subastas} subastas")
+    total_buscadas = 0
+    total_guardadas = 0
+    total_duplicadas = 0
+    total_errores = 0
+    
+    inicio = datetime.now()
+    
+    # Procesar cada provincia
+    for provincia_cod, provincia_nombre in PROVINCIAS.items():
+        print(f"\n📍 === PROVINCIA: {provincia_nombre} ({provincia_cod}) ===")
+        
+        # Para cada tipo de subasta
+        for tipo_subasta_cod, tipo_subasta_nombre in TIPOS_SUBASTA.items():
+            
+            # Para cada estado
+            for estado_cod, estado_nombre in ESTADOS.items():
+                
+                # Para cada tipo de bien
+                for tipo_bien_cod, tipo_bien_nombre in TIPOS_BIEN.items():
+                    
+                    total_buscadas += 1
+                    
+                    # Buscar subastas con esta combinación
+                    subastas = buscar_subastas(
+                        provincia_cod=provincia_cod,
+                        tipo_subasta=tipo_subasta_cod,
+                        estado=estado_cod,
+                        tipo_bien=tipo_bien_cod
+                    )
+                    
+                    # Guardar cada subasta
+                    for subasta in subastas:
+                        try:
+                            if guardar_subasta_db(subasta):
+                                total_guardadas += 1
+                            else:
+                                total_duplicadas += 1
+                        except Exception as e:
+                            total_errores += 1
+                            print(f"    ❌ Error guardando: {str(e)}")
+                    
+                    time.sleep(1)  # Pausa entre búsquedas
+    
+    # Resumen final
+    duracion = datetime.now() - inicio
+    
+    print("\n" + "=" * 60)
+    print("✅ SCRAPING COMPLETADO")
+    print("=" * 60)
+    print(f"⏱️  Duración: {duracion}")
+    print(f"🔍 Búsquedas realizadas: {total_buscadas}")
+    print(f"✅ Subastas nuevas guardadas: {total_guardadas}")
+    print(f"⏭️  Subastas duplicadas: {total_duplicadas}")
+    print(f"❌ Errores: {total_errores}")
+    print("=" * 60)
+    
+    return {
+        'total_buscadas': total_buscadas,
+        'total_guardadas': total_guardadas,
+        'total_duplicadas': total_duplicadas,
+        'total_errores': total_errores,
+        'duracion': str(duracion)
+    }
 
 if __name__ == '__main__':
     scraping_completo()
